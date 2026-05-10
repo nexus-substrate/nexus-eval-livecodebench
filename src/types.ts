@@ -98,6 +98,10 @@ export interface LiveCodeBenchEvalResult {
   readonly testStderr?: string;
   /** v0.2: true iff the Python toolchain wasn't installed. */
   readonly toolchainMissing?: boolean;
+  /** v0.3: number of agent turns the model used in agentic mode. */
+  readonly turnsUsed?: number;
+  /** v0.3: why the agent loop stopped — agent-stopped, turn-budget, tool-error, cancelled. */
+  readonly agentStopReason?: string;
 }
 
 export interface LiveCodeBenchAdapterConfig {
@@ -129,4 +133,12 @@ export interface LiveCodeBenchAdapterConfig {
   readonly runTests?: boolean;
   /** v0.2: per-test timeout. Default: 15_000ms. */
   readonly testTimeoutMs?: number;
+  /**
+   * v0.3: drive the model as an agent that can iterate on test failures
+   * via read_problem / write_solution / run_tests tools. Requires
+   * nexus-agents >= 2.72.1. Default: false (v0.2 single-shot).
+   */
+  readonly agenticMode?: boolean;
+  /** v0.3: turn budget when agenticMode is on. Default: profile-derived. */
+  readonly agenticTurnBudget?: number;
 }

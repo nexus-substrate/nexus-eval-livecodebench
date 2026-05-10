@@ -53,6 +53,12 @@ Options:
                               degrades to v0.1 "did the model produce code".
                               Useful for fast smoke runs without python3.
   --test-timeout <ms>         Per-test timeout. Default: 15000.
+  --agentic-mode              v0.3: drive the model as an agent that
+                              iterates on test failures (read_problem /
+                              write_solution / run_tests tools).
+                              Requires nexus-agents >= 2.72.1.
+  --agentic-turn-budget <n>   Max agent turns when --agentic-mode is on.
+                              Default: profile-derived.
   --platforms <comma-list>    Filter by platform (leetcode,atcoder,
                               codeforces). Default: all.
   --difficulties <comma-list> Filter by difficulty (easy,medium,hard).
@@ -126,6 +132,8 @@ async function main(argv: readonly string[]): Promise<number> {
       'min-release-date': { type: 'string' },
       'no-run-tests': { type: 'boolean', default: false },
       'test-timeout': { type: 'string' },
+      'agentic-mode': { type: 'boolean', default: false },
+      'agentic-turn-budget': { type: 'string' },
       limit: { type: 'string' },
       concurrency: { type: 'string', default: '1' },
       timeout: { type: 'string', default: '300000' },
@@ -170,6 +178,10 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(parsed.values['no-run-tests'] === true && { runTests: false }),
     ...(parsed.values['test-timeout'] !== undefined && {
       testTimeoutMs: Number(parsed.values['test-timeout']),
+    }),
+    ...(parsed.values['agentic-mode'] === true && { agenticMode: true }),
+    ...(parsed.values['agentic-turn-budget'] !== undefined && {
+      agenticTurnBudget: Number(parsed.values['agentic-turn-budget']),
     }),
   });
 
