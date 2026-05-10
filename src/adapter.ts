@@ -1,15 +1,20 @@
 /**
- * Template BenchmarkAdapter implementation.
+ * LiveCodeBench BenchmarkAdapter — clean-room implementation.
  *
- * Replace everything here with your benchmark-specific logic. The four
- * methods are all you need to implement; `runBenchmark()` from
- * `nexus-agents` handles the harness (concurrency, timeouts, progress,
- * partial failure, summary).
+ * Self-contained: depends ONLY on public `nexus-agents` types
+ * (`BenchmarkAdapter`, `IModelAdapter`, …). No internal-helper imports.
  *
- * Type parameters:
- * - TInstance: one task/problem in your benchmark
- * - TPrediction: what your solver produces (patch, code, answer, etc.)
- * - TEvalResult: what your evaluator produces (pass/fail + context)
+ * v0.1 (this release): model-only baseline. Loads problems from a
+ * bundled fixture or a local `.jsonl`, sends each one to the configured
+ * `IModelAdapter`, parses out a Python solution. Pass/fail = "did the
+ * model produce extractable Python code" — NOT test-based pass/fail.
+ *
+ * v0.2 follow-up: HuggingFace-fetch loader for the `code_generation_lite`
+ * dataset, and a sandboxed Python runner that turns hidden-test execution
+ * into the canonical pass/fail.
+ *
+ * v0.3 follow-up: agentic flow via `ICliAdapter` so the model can
+ * iterate on test failures.
  *
  * @module adapter
  */
@@ -18,147 +23,150 @@ import type {
   BenchmarkAdapter,
   BenchmarkRunContext,
   BenchmarkRunSummary,
+  IModelAdapter,
 } from 'nexus-agents';
 
-// ============================================================================
-// Replace these types with your benchmark's actual shapes
-// ============================================================================
+import { loadLiveCodeBenchInstances } from './runner/instance-loader.js';
+import { generatePrediction } from './runner/agent-invoker.js';
+import type {
+  LiveCodeBenchAdapterConfig,
+  LiveCodeBenchEvalResult,
+  LiveCodeBenchInstance,
+  LiveCodeBenchPrediction,
+} from './types.js';
 
-/** One problem from your benchmark dataset. */
-export interface BenchmarkInstance {
-  readonly id: string;
-  readonly prompt: string;
-  readonly expectedOutput?: string;
-  // Add whatever fields your dataset has.
-}
-
-/** What your solver produces for one instance. */
-export interface BenchmarkPrediction {
-  readonly instanceId: string;
-  readonly output: string;
-  readonly durationMs: number;
-}
-
-/** Verdict for one instance. Adapter decides pass/fail via isPass(). */
-export interface BenchmarkEvalResult {
-  readonly instanceId: string;
-  readonly passed: boolean;
-  readonly reason?: string;
-}
-
-// ============================================================================
-// Configuration — what loadInstances() takes
-// ============================================================================
-
-export interface BenchmarkConfig {
-  /** Where the dataset lives. Replace with whatever your benchmark needs. */
-  readonly datasetPath?: string;
-  /** Variant within the benchmark family, if any (e.g., 'lite', 'full'). */
-  readonly variant?: string;
-}
-
-// ============================================================================
-// Adapter implementation
-// ============================================================================
-
-/**
- * Rename this class to reflect your benchmark (e.g., `HumanEvalAdapter`,
- * `MbppAdapter`).
- */
-export class TemplateBenchmarkAdapter
-  implements BenchmarkAdapter<BenchmarkInstance, BenchmarkPrediction, BenchmarkEvalResult>
+export class LiveCodeBenchAdapter
+  implements
+    BenchmarkAdapter<LiveCodeBenchInstance, LiveCodeBenchPrediction, LiveCodeBenchEvalResult>
 {
-  readonly name = 'template-bench'; // replace: 'humaneval', 'mbpp', etc.
-  readonly variant: string | undefined;
+  readonly name = 'livecodebench';
+  // No `variant` in v1 — only the code_generation task is wired up.
+  // Future variants (`self_repair`, `test_output_prediction`, …) would
+  // set this to one of those task identifiers.
 
-  constructor(config: BenchmarkConfig = {}) {
-    this.variant = config.variant;
+  private readonly modelAdapter: IModelAdapter;
+  private readonly config: LiveCodeBenchAdapterConfig;
+  private readonly resultCache = new Map<string, LiveCodeBenchEvalResult>();
+
+  constructor(modelAdapter: IModelAdapter, config: LiveCodeBenchAdapterConfig = {}) {
+    this.modelAdapter = modelAdapter;
+    this.config = config;
   }
 
-  /**
-   * Load the task set. Called once per run.
-   *
-   * Your implementation should: read from disk / fetch from an API /
-   * load a fixture. Return an array of instances the orchestrator will
-   * iterate through.
-   */
-  loadInstances(_config: Record<string, unknown>): Promise<readonly BenchmarkInstance[]> {
-    // TODO: replace with your dataset loader
-    return Promise.resolve([
-      { id: 'example-1', prompt: 'add two numbers' },
-      { id: 'example-2', prompt: 'reverse a string' },
-    ]);
+  loadInstances(_runConfig: Record<string, unknown>): Promise<readonly LiveCodeBenchInstance[]> {
+    return Promise.resolve(
+      loadLiveCodeBenchInstances({
+        ...(this.config.source !== undefined && { source: this.config.source }),
+        ...(this.config.platforms !== undefined && { platforms: this.config.platforms }),
+        ...(this.config.difficulties !== undefined && { difficulties: this.config.difficulties }),
+        ...(this.config.minReleaseDate !== undefined && {
+          minReleaseDate: this.config.minReleaseDate,
+        }),
+      })
+    );
   }
 
-  /**
-   * Run the solver on one instance. No evaluation here — this method
-   * only produces the prediction.
-   *
-   * Your implementation typically calls out to a CLI / API / sandbox.
-   * Honor `ctx.signal` to support cancellation.
-   */
-  runInstance(
-    instance: BenchmarkInstance,
+  async runInstance(
+    instance: LiveCodeBenchInstance,
     ctx: BenchmarkRunContext
-  ): Promise<BenchmarkPrediction> {
-    // TODO: replace with your actual solver invocation
-    const start = performance.now();
-    void ctx; // use ctx.signal, ctx.timeoutMs, ctx.onProgress as needed
-    return Promise.resolve({
-      instanceId: instance.id,
-      output: `stub output for ${instance.id}`,
-      durationMs: Math.round(performance.now() - start),
+  ): Promise<LiveCodeBenchPrediction> {
+    void ctx;
+    const result = await generatePrediction(instance, this.modelAdapter);
+
+    if (!result.ok) {
+      const empty: LiveCodeBenchPrediction = {
+        instanceId: instance.instanceId,
+        code: '',
+        modelLabel: this.modelAdapter.modelId,
+        durationMs: 0,
+      };
+      this.resultCache.set(instance.instanceId, {
+        instanceId: instance.instanceId,
+        platform: instance.platform,
+        difficulty: instance.difficulty,
+        passed: false,
+        reason: result.error.message,
+      });
+      return empty;
+    }
+
+    const codeProduced = result.value.code.length > 0;
+    this.resultCache.set(instance.instanceId, {
+      instanceId: instance.instanceId,
+      platform: instance.platform,
+      difficulty: instance.difficulty,
+      passed: codeProduced,
+      ...(codeProduced ? {} : { reason: 'model returned no extractable Python code' }),
     });
+    return result.value;
   }
 
-  /**
-   * Evaluate a prediction against ground truth. Returns your
-   * benchmark-specific verdict — pass/fail semantics live here.
-   */
   evaluate(
-    instance: BenchmarkInstance,
-    prediction: BenchmarkPrediction
-  ): Promise<BenchmarkEvalResult> {
-    // TODO: replace with your actual evaluation logic (exec tests, diff
-    // against expected output, grade with an LLM, etc.)
-    const passed =
-      instance.expectedOutput === undefined
-        ? prediction.output.length > 0
-        : prediction.output === instance.expectedOutput;
+    instance: LiveCodeBenchInstance,
+    prediction: LiveCodeBenchPrediction
+  ): Promise<LiveCodeBenchEvalResult> {
+    const cached = this.resultCache.get(instance.instanceId);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const passed = prediction.code.length > 0;
     return Promise.resolve({
-      instanceId: instance.id,
+      instanceId: instance.instanceId,
+      platform: instance.platform,
+      difficulty: instance.difficulty,
       passed,
-      ...(passed ? {} : { reason: 'output did not match expected' }),
+      ...(passed ? {} : { reason: 'evaluate() called without runInstance' }),
     });
   }
 
-  /** Does this verdict count as a pass? Usually trivial. */
-  isPass(result: BenchmarkEvalResult): boolean {
+  isPass(result: LiveCodeBenchEvalResult): boolean {
     return result.passed;
   }
 
   /**
-   * Aggregate verdicts into a summary. Should be pure + deterministic.
-   * Put benchmark-specific breakdowns (by category, difficulty, etc.)
-   * into `metadata`.
+   * Per-platform AND per-difficulty pass-rate breakdowns. LiveCodeBench's
+   * headline signals are (a) does the model degrade on harder problems
+   * and (b) does it favour one platform's idiomatic style over another.
    */
   summarize(
-    results: readonly BenchmarkEvalResult[],
+    results: readonly LiveCodeBenchEvalResult[],
     runTimeMs: number
   ): BenchmarkRunSummary {
     const passed = results.filter((r) => r.passed).length;
+    const byPlatform: Record<string, { total: number; passed: number }> = {};
+    const byDifficulty: Record<string, { total: number; passed: number }> = {};
+    for (const r of results) {
+      const pBucket = byPlatform[r.platform] ?? { total: 0, passed: 0 };
+      pBucket.total += 1;
+      if (r.passed) pBucket.passed += 1;
+      byPlatform[r.platform] = pBucket;
+
+      const dBucket = byDifficulty[r.difficulty] ?? { total: 0, passed: 0 };
+      dBucket.total += 1;
+      if (r.passed) dBucket.passed += 1;
+      byDifficulty[r.difficulty] = dBucket;
+    }
     return {
       name: this.name,
-      variant: this.variant,
+      variant: 'code_generation',
       total: results.length,
       passed,
       passRate: results.length > 0 ? passed / results.length : 0,
       runTimeMs,
       metadata: {
-        // Add benchmark-specific breakdowns here, e.g.:
-        // passByCategory: { ... },
-        // datasetVersion: '...',
+        byPlatform: withRates(byPlatform),
+        byDifficulty: withRates(byDifficulty),
+        note: 'pass/fail reflects code generation only. Run hidden tests against the emitted code for test-based resolution (v0.2 follow-up).',
       },
     };
   }
+}
+
+function withRates(
+  buckets: Record<string, { total: number; passed: number }>
+): Record<string, { total: number; passed: number; passRate: number }> {
+  return Object.fromEntries(
+    Object.entries(buckets).map(([k, v]) => [
+      k,
+      { ...v, passRate: v.total > 0 ? v.passed / v.total : 0 },
+    ])
+  );
 }
