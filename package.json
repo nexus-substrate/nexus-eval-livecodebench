@@ -1,6 +1,6 @@
 {
   "name": "nexus-eval-livecodebench",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "LiveCodeBench evaluation harness for nexus-agents — competitive-programming benchmark with deterministic per-problem hidden tests (Python; LeetCode / AtCoder / Codeforces)",
   "type": "module",
   "main": "dist/index.js",
@@ -36,11 +36,11 @@
     "dist/"
   ],
   "peerDependencies": {
-    "nexus-agents": ">=2.33.1"
+    "nexus-agents": ">=2.72.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "nexus-agents": "^2.71.0",
+    "nexus-agents": "^2.72.1",
     "typescript": "^5.9.0",
     "vitest": "^4.0.0"
   }

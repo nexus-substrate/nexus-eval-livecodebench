@@ -29,6 +29,7 @@ import type {
 import { loadLiveCodeBenchInstances } from './runner/instance-loader.js';
 import { generatePrediction } from './runner/agent-invoker.js';
 import { runPython, type RunPythonOptions } from './runner/python-runner.js';
+import { runAgenticFlow, type AgenticFlowResult } from './runner/agentic-flow.js';
 import type {
   LiveCodeBenchAdapterConfig,
   LiveCodeBenchEvalResult,
@@ -76,6 +77,9 @@ export class LiveCodeBenchAdapter
     ctx: BenchmarkRunContext
   ): Promise<LiveCodeBenchPrediction> {
     void ctx;
+    if (this.config.agenticMode === true) {
+      return this.runInstanceAgentic(instance, ctx);
+    }
     const result = await generatePrediction(instance, this.modelAdapter);
 
     if (!result.ok) {
@@ -104,6 +108,58 @@ export class LiveCodeBenchAdapter
       ...(codeProduced ? {} : { reason: 'model returned no extractable Python code' }),
     });
     return result.value;
+  }
+
+  /**
+   * v0.3: agent loop with read_problem / write_solution / run_tests
+   * tools. Final test verdict from the loop becomes the EvalResult.
+   */
+  private async runInstanceAgentic(
+    instance: LiveCodeBenchInstance,
+    ctx: BenchmarkRunContext
+  ): Promise<LiveCodeBenchPrediction> {
+    const flow = await runAgenticFlow(instance, this.modelAdapter, {
+      ...(this.config.agenticTurnBudget !== undefined && {
+        turnBudget: this.config.agenticTurnBudget,
+      }),
+      ...(this.config.testTimeoutMs !== undefined && { perTestTimeoutMs: this.config.testTimeoutMs }),
+      ...(this.spawnImplForTests !== undefined && { spawnImpl: this.spawnImplForTests }),
+      ...(ctx.signal !== undefined && { signal: ctx.signal }),
+    });
+    this.cacheAgenticVerdict(instance, flow);
+    return flow.prediction;
+  }
+
+  private cacheAgenticVerdict(
+    instance: LiveCodeBenchInstance,
+    flow: AgenticFlowResult
+  ): void {
+    this.modelOnlyVerdictCache.set(instance.instanceId, {
+      instanceId: instance.instanceId,
+      platform: instance.platform,
+      difficulty: instance.difficulty,
+      passed: flow.testResult?.passed ?? flow.prediction.code.length > 0,
+      turnsUsed: flow.agentRun.turnsUsed,
+      agentStopReason: flow.agentRun.stopReason,
+      ...(flow.testResult !== null && {
+        testsRun: flow.testResult.testsRun,
+        testsPassed: flow.testResult.testsPassed,
+        ...(flow.testResult.stderr.length > 0 && { testStderr: flow.testResult.stderr }),
+        ...(flow.testResult.toolchainMissing && {
+          toolchainMissing: true,
+          reason: 'python3 not found in PATH (toolchain missing)',
+        }),
+      }),
+      ...(flow.testResult === null &&
+        flow.prediction.code.length === 0 && {
+          reason: 'agent emitted no solution before stopping',
+        }),
+      ...(flow.testResult !== null &&
+        !flow.testResult.passed &&
+        !flow.testResult.toolchainMissing && {
+          reason: `${String(flow.testResult.testsPassed)}/${String(flow.testResult.testsRun)} public tests passed`,
+        }),
+    });
   }
 
   /**
