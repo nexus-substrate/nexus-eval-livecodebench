@@ -1,12 +1,12 @@
 {
-  "name": "nexus-eval-BENCHMARK",
-  "version": "0.0.1",
-  "description": "TEMPLATE — Replace with: '<benchmark-name> evaluation harness for nexus-agents'",
+  "name": "nexus-eval-livecodebench",
+  "version": "0.1.0",
+  "description": "LiveCodeBench evaluation harness for nexus-agents — competitive-programming benchmark with deterministic per-problem hidden tests (Python; LeetCode / AtCoder / Codeforces)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "nexus-eval-BENCHMARK": "dist/cli.js"
+    "nexus-eval-livecodebench": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -20,7 +20,12 @@
     "nexus-agents",
     "nexus-agents-eval",
     "benchmark",
-    "evaluation"
+    "evaluation",
+    "livecodebench",
+    "competitive-programming",
+    "leetcode",
+    "atcoder",
+    "codeforces"
   ],
   "author": "",
   "license": "MIT",
