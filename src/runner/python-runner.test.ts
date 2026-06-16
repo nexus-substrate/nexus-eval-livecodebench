@@ -13,18 +13,53 @@ interface MockChildOptions {
   stderr?: string;
   delayMs?: number;
   errorCode?: string;
+  /**
+   * Simulate a solution that exits before reading stdin: writing to stdin
+   * raises EPIPE. When set, stdin is a real EventEmitter that emits an
+   * 'error' on write (mirroring a closed pipe), so a missing 'error' handler
+   * would escalate to an uncaughtException.
+   */
+  stdinEpipe?: boolean;
 }
 
 function makeMockChild(opts: MockChildOptions = {}) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter;
     stderr: EventEmitter;
-    stdin: { write: (s: string) => void; end: () => void };
+    stdin: EventEmitter & {
+      write: (s: string, cb?: () => void) => void;
+      end: () => void;
+    };
     kill: (sig: string) => boolean;
   };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { write: () => undefined, end: () => undefined };
+  if (opts.stdinEpipe === true) {
+    // A stream-like stdin that errors on write, the way node's net/stream
+    // layer does for a broken pipe. The 'error' is emitted asynchronously,
+    // exactly as Node does, so an unhandled listener throws.
+    const stdin = new EventEmitter() as EventEmitter & {
+      write: (s: string, cb?: () => void) => void;
+      end: () => void;
+    };
+    stdin.write = (_s: string, _cb?: () => void) => {
+      const err = new Error('write EPIPE') as NodeJS.ErrnoException;
+      err.code = 'EPIPE';
+      queueMicrotask(() => stdin.emit('error', err));
+    };
+    stdin.end = () => undefined;
+    child.stdin = stdin;
+  } else {
+    // Real ChildProcess.stdin is a Writable stream (an EventEmitter); the mock
+    // mirrors that so the runner's `.on('error', ...)` guard works.
+    const stdin = new EventEmitter() as EventEmitter & {
+      write: (s: string, cb?: () => void) => void;
+      end: () => void;
+    };
+    stdin.write = (_s: string, cb?: () => void) => cb?.();
+    stdin.end = () => undefined;
+    child.stdin = stdin;
+  }
   child.kill = vi.fn(() => true);
 
   const fire = (): void => {
@@ -176,6 +211,37 @@ describe('runPython', () => {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
+    }
+  });
+
+  it('records a failed test (not a crash) when the solution exits before reading stdin (EPIPE)', async () => {
+    // Regression for the uncaughtException: a solution that fast-fails closes
+    // its stdin; writing the test input raises EPIPE on child.stdin. Without
+    // an 'error' handler on the stream, Node escalates to uncaughtException and
+    // crashes the whole harness. The runner must instead record passed:false.
+    const uncaught: Error[] = [];
+    const onUncaught = (err: Error): void => {
+      uncaught.push(err);
+    };
+    process.on('uncaughtException', onUncaught);
+    try {
+      const spawnImpl: SpawnImpl = vi.fn(() =>
+        // Solution crashed on import: nonzero exit, no stdout, broken stdin pipe.
+        makeMockChild({
+          exitCode: 1,
+          stderr: 'SyntaxError: invalid syntax',
+          stdinEpipe: true,
+        }) as unknown as ReturnType<SpawnImpl>
+      );
+      const result = await runPython(stdioInstance, goodPrediction, { spawnImpl });
+      // Allow any queued microtask/macrotask 'error' emission to flush.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(uncaught).toHaveLength(0); // did NOT crash the harness
+      expect(result.passed).toBe(false);
+      expect(result.timedOut).toBe(false);
+    } finally {
+      process.off('uncaughtException', onUncaught);
     }
   });
 

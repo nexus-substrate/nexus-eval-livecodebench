@@ -62,17 +62,32 @@ function makeScriptedModel(turns: readonly ScriptedTurn[]): IModelAdapter {
   };
 }
 
+/** Real ChildProcess.stdin is a Writable stream (an EventEmitter); mirror that
+ * so the runner's `.on('error', ...)` guard and write-callback work. */
+function makeMockStdin(): EventEmitter & {
+  write: (s: string, cb?: () => void) => void;
+  end: () => void;
+} {
+  const stdin = new EventEmitter() as EventEmitter & {
+    write: (s: string, cb?: () => void) => void;
+    end: () => void;
+  };
+  stdin.write = (_s: string, cb?: () => void) => cb?.();
+  stdin.end = () => undefined;
+  return stdin;
+}
+
 function makeMockSpawn(opts: { exitCode: number; stdout?: string; stderr?: string }): SpawnImpl {
   return vi.fn(() => {
     const child = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter;
       stderr: EventEmitter;
-      stdin: { write: (s: string) => void; end: () => void };
+      stdin: ReturnType<typeof makeMockStdin>;
       kill: () => boolean;
     };
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
-    child.stdin = { write: () => undefined, end: () => undefined };
+    child.stdin = makeMockStdin();
     child.kill = () => true;
     queueMicrotask(() => {
       if (opts.stdout !== undefined) child.stdout.emit('data', opts.stdout);
@@ -140,12 +155,12 @@ describe('runAgenticFlow (livecodebench)', () => {
       const child = new EventEmitter() as EventEmitter & {
         stdout: EventEmitter;
         stderr: EventEmitter;
-        stdin: { write: (s: string) => void; end: () => void };
+        stdin: ReturnType<typeof makeMockStdin>;
         kill: () => boolean;
       };
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
-      child.stdin = { write: () => undefined, end: () => undefined };
+      child.stdin = makeMockStdin();
       child.kill = () => true;
       const passing = callCount >= 2;
       queueMicrotask(() => {

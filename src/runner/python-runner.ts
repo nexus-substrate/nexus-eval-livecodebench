@@ -193,8 +193,24 @@ async function runStdioTest(
       stderr += stderr.length === 0 ? err.message : `\n${err.message}`;
     });
 
-    child.stdin?.write(test.input);
-    child.stdin?.end();
+    // A solution that exits before reading stdin (crashes on import, syntax
+    // error, or simply never reads) leaves a closed pipe. Writing to it emits
+    // an 'error' (EPIPE/EOF) on the stdin stream; without a handler Node
+    // escalates it to an uncaughtException and crashes the whole harness.
+    // Swallow it here — the child's 'close'/'exit' handler still resolves the
+    // test with the correct passed:false verdict.
+    child.stdin?.on('error', () => {
+      /* child gone before reading stdin — recorded via the close path */
+    });
+    try {
+      child.stdin?.write(test.input, () => {
+        child.stdin?.end();
+      });
+    } catch {
+      // Synchronous write failure (e.g. already-destroyed stream): the close
+      // path produces the failing verdict, so nothing else to do here.
+      child.stdin?.end();
+    }
 
     child.on('close', (exitCode: number | null) => {
       clearTimeout(timer);
