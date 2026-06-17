@@ -15,11 +15,23 @@
  * @module runner/code-extractor
  */
 
-const FENCED_RE = /```(\w*)\s*\n([\s\S]*?)```/g;
+const FENCED_RE = /```(\w*)[^\S\n]*\n([\s\S]*?)```/g;
 const PY_LANGS = new Set(['python', 'py', 'python3', 'py3']);
-const RAW_PY_HEAD = /^(\s*(#.*\n)*\s*)(def\s|class\s|import\s|from\s)/;
+// Anchored, single whitespace-run prefix (no overlapping `\s*` around the
+// comment-line group) so this stays linear on adversarial input.
+const RAW_PY_HEAD = /^[^\S\n]*(?:#[^\n]*\n[^\S\n]*)*(?:def\s|class\s|import\s|from\s)/;
+
+// Model responses are untrusted. The fenced-block and raw-Python regexes run
+// over the whole response; an adversarial blob (e.g. thousands of backtick
+// runs or unterminated fences) could otherwise drive polynomial backtracking
+// (CodeQL js/polynomial-redos) and DoS the eval harness. A genuine solution is
+// kilobytes at most; cap well above that and skip extraction past the cap.
+const MAX_RESPONSE_LEN = 512 * 1024;
 
 export function extractPythonCode(response: string): string {
+  if (response.length > MAX_RESPONSE_LEN) {
+    return '';
+  }
   const blocks: Array<{ lang: string; body: string }> = [];
   FENCED_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
