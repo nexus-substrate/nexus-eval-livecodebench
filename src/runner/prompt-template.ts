@@ -58,7 +58,12 @@ export function getSystemPrompt(): string {
 function formatBlob(s: string): string {
   // Multi-line inputs/outputs are common (one int per line, etc.). Render
   // them inline for short blobs, on their own line for long ones.
-  const trimmed = s.replace(/\s+$/, '');
+  // NB: trim trailing whitespace with String.prototype.trimEnd rather than a
+  // `/\s+$/` replace — the anchored `\s+$` is polynomial-backtracking
+  // (CodeQL js/polynomial-redos) on an adversarial blob of trailing
+  // whitespace followed by a non-space, and these blobs are untrusted dataset
+  // fields. trimEnd is linear and equivalent here.
+  const trimmed = s.trimEnd();
   if (trimmed.length === 0) return '<empty>';
   if (trimmed.includes('\n') || trimmed.length > 60) {
     return `\n    ${trimmed.replace(/\n/g, '\n    ')}`;
